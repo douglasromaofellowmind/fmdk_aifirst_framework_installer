@@ -3,11 +3,14 @@
 .SYNOPSIS
     FMDK Workbench installer — bare Windows to a running app, one script.
 .DESCRIPTION
-    Installs Node.js, Git, and the Claude CLI (via winget/npm), clones the
-    standalone FMDK Workbench app and the framework CLI, scaffolds your
-    personal workbench home, configures the app, and creates Desktop +
-    Start Menu shortcuts. Safe to re-run — already-installed pieces are
-    skipped.
+    Installs Node.js, Git, the GitHub CLI, and the Claude CLI (via
+    winget/npm), signs in to GitHub (needed because the app and framework
+    repos are private — a private GitHub repo returns 404, not 401, to an
+    unauthenticated clone, so plain git never gets to prompt for
+    credentials on its own), clones the standalone FMDK Workbench app and
+    the framework CLI, scaffolds your personal workbench home, configures
+    the app, and creates Desktop + Start Menu shortcuts. Safe to re-run —
+    already-installed pieces are skipped.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -87,10 +90,11 @@ function Install-WingetPackage {
 }
 
 function Install-Runtime {
-    Write-Step "Setting up the runtime (Node.js, Git)..."
-    # OpenJS.NodeJS.LTS's winget manifest has no user-scope installer (checked 2026-07 against microsoft/winget-pkgs) — needs admin rights, handled by the elevation check in Install-WingetPackage. Git.Git does support user scope.
+    Write-Step "Setting up the runtime (Node.js, Git, GitHub CLI)..."
+    # OpenJS.NodeJS.LTS's winget manifest has no user-scope installer (checked 2026-07 against microsoft/winget-pkgs) — needs admin rights, handled by the elevation check in Install-WingetPackage. Git.Git does support user scope. GitHub.cli's scope support is unconfirmed — left unset so the same elevation check applies if it turns out to need it too.
     Install-WingetPackage -Id 'OpenJS.NodeJS.LTS' -CheckCommand 'node' -FriendlyName 'Node.js'
     Install-WingetPackage -Id 'Git.Git' -CheckCommand 'git' -FriendlyName 'Git' -Scope 'user'
+    Install-WingetPackage -Id 'GitHub.cli' -CheckCommand 'gh' -FriendlyName 'GitHub CLI'
 
     # winget-installed tools need a PATH refresh for this process before Get-Command can see them.
     $env:Path = $env:Path + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
@@ -103,7 +107,11 @@ function Install-Runtime {
         Write-Host "X Git installed but not found on PATH. Close this window, reopen PowerShell, and re-run this script." -ForegroundColor Red
         exit 1
     }
-    Write-Host "OK Node.js and Git ready."
+    if (-not (Test-CommandAvailable 'gh')) {
+        Write-Host "X GitHub CLI installed but not found on PATH. Close this window, reopen PowerShell, and re-run this script." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "OK Node.js, Git, and GitHub CLI ready."
 }
 
 function Install-ClaudeCli {
@@ -127,6 +135,31 @@ function Connect-ClaudeAccount {
     Write-Host "OK Signed in to Claude."
 }
 
+function Connect-GitHubAccount {
+    # The app and framework repos are private. A private GitHub repo returns
+    # 404 (not 401) to an unauthenticated git operation specifically so it
+    # doesn't reveal the repo exists — and git only knows to prompt for
+    # credentials in response to a real 401 challenge, so a bare `git clone`
+    # against a private GitHub repo never gets the chance to ask for
+    # sign-in. `gh auth login` does the actual sign-in (a real browser/device
+    # flow, no token typed by hand); `gh auth setup-git` wires git itself to
+    # use that sign-in for subsequent `git clone`/`git fetch` calls.
+    gh auth status --hostname github.com *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Step "Signing in to GitHub..."
+        Write-Host "  A browser window will open - sign in with the GitHub account that has access to the FMDK Workbench repos."
+        Invoke-Checked -FriendlyError "GitHub sign-in did not complete. Run 'gh auth login' yourself, then re-run this script." -Action {
+            gh auth login --hostname github.com --git-protocol https --web
+        }
+    } else {
+        Write-Host "  Already signed in to GitHub - skipping."
+    }
+    Invoke-Checked -FriendlyError "Could not configure git to use your GitHub sign-in." -Action {
+        gh auth setup-git
+    }
+    Write-Host "OK GitHub ready."
+}
+
 $InstallRoot = Join-Path $env:LOCALAPPDATA 'FMDK-Workbench'
 $AppDir = Join-Path $InstallRoot 'app'
 $CliDir = Join-Path $InstallRoot 'framework'
@@ -145,7 +178,7 @@ function Install-GitClone {
         Write-Host "  $FriendlyName already installed at $Dest - skipping."
         return
     }
-    Write-Step "Downloading $FriendlyName (sign in via the browser prompt if asked)..."
+    Write-Step "Downloading $FriendlyName..."
     $parentDir = Split-Path $Dest -Parent
     New-Item -ItemType Directory -Force -Path $parentDir | Out-Null
 
@@ -305,12 +338,13 @@ function New-UpdateShortcut {
 # ==== MAIN ====
 
 Write-Host "FMDK Workbench installer" -ForegroundColor Green
-Write-Host "This installs Node.js, Git, and the Claude CLI, then sets up your workbench."
+Write-Host "This installs Node.js, Git, GitHub CLI, and the Claude CLI, then sets up your workbench."
 Write-Host "Already-installed pieces are skipped, so it's safe to re-run this script."
 
 Install-Runtime
 Install-ClaudeCli
 Connect-ClaudeAccount
+Connect-GitHubAccount
 
 Install-GitClone -Url $AppRepoUrl -Dest $AppDir -FriendlyName 'FMDK Workbench app'
 Install-GitClone -Url $FrameworkRepoUrl -Dest $CliDir -FriendlyName 'Framework CLI'
