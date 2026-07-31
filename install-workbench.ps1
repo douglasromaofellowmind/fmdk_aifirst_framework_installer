@@ -251,6 +251,14 @@ function Set-AppConfig {
     Write-Step "Configuring the app..."
     Set-PersistentEnvVar -Name 'CLAUDE_DIR' -Value $WorkbenchHome
     Set-PersistentEnvVar -Name 'FMDK_CLI_PATH' -Value (Join-Path $CliDir 'framework\bin\fmdk.js')
+    # The Claude Agent SDK's own bundled native CLI binary is an optional,
+    # platform-specific dependency resolved via node_modules at install time
+    # — absent from the standalone extracted app (no node_modules shipped).
+    # Point it at the `claude` CLI this script already installed instead.
+    # Nitro only honors a NUXT_-prefixed env var as a runtime override for
+    # any runtimeConfig key (confirmed the hard way earlier in this same
+    # installer, for reactDistDir/REACT_DIST_DIR) — not the bare name.
+    Set-PersistentEnvVar -Name 'NUXT_CLAUDE_CLI_PATH' -Value (Get-Command claude).Source
 }
 
 function New-HiddenLauncher {
