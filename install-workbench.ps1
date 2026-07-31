@@ -317,12 +317,13 @@ function Start-WorkbenchApp {
     Write-Step "Launching FMDK Workbench..."
     $binScript = Join-Path $AppDir 'bin\start.mjs'
     $nodePath = (Get-Command node).Source
+    # bin/start.mjs opens the browser itself once the server actually
+    # responds (it polls, with a real timeout) — not a fixed sleep here,
+    # which was too short on a cold machine's first launch.
     Invoke-Checked -FriendlyError "Could not start FMDK Workbench. Try launching it from the shortcut instead." -Action {
         Start-Process -FilePath $nodePath -ArgumentList "`"$binScript`"" -WorkingDirectory $AppDir -WindowStyle Hidden
     }
-    Start-Sleep -Seconds 3
-    Start-Process 'http://127.0.0.1:3030'
-    Write-Host "OK FMDK Workbench is starting - your browser will open shortly."
+    Write-Host "OK FMDK Workbench is starting - your browser will open in a few seconds."
 }
 
 function New-UpdateShortcut {
