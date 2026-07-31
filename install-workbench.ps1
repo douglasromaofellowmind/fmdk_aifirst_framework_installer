@@ -177,6 +177,7 @@ $WorkbenchHome = Join-Path $env:USERPROFILE 'FMDK-Workbench'
 
 $AppRepoUrl = 'https://github.com/douglas-romao_fmdk/fmdk_aifirst_framework_ui.git'
 $FrameworkRepoUrl = 'https://github.com/douglas-romao_fmdk/fmdk_aifirst_framework.git'
+$InstallerDistUrl = 'https://raw.githubusercontent.com/douglasromaofellowmind/fmdk_aifirst_framework_installer/main'
 
 function Install-GitClone {
     param(
@@ -326,7 +327,13 @@ function Start-WorkbenchApp {
 
 function New-UpdateShortcut {
     $updateScript = Join-Path $InstallRoot 'update-workbench.ps1'
-    Copy-Item -Path $PSCommandPath.Replace('install-workbench.ps1', 'update-workbench.ps1') -Destination $updateScript -Force
+    # $PSCommandPath is empty when this script runs via `irm | iex` (the
+    # documented bootstrap) — there's no local script file to copy from,
+    # just an evaluated string. Fetch the update script from the same
+    # public mirror this installer itself came from instead.
+    Invoke-Checked -FriendlyError "Could not download the update script. Check your internet connection and try again." -Action {
+        Invoke-RestMethod -Uri "$InstallerDistUrl/update-workbench.ps1" -OutFile $updateScript
+    }
 
     $startMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) 'FMDK Workbench'
     $path = Join-Path $startMenuDir 'Check for Updates.lnk'
