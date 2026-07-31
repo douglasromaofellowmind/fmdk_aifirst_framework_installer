@@ -1,13 +1,13 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    FMDK Workbench installer — bare Windows to a running app, one script.
+    FMDK Agentic OS installer — bare Windows to a running app, one script.
 .DESCRIPTION
     Installs Node.js, Git, the GitHub CLI, and the Claude CLI (via
     winget/npm), signs in to GitHub (needed because the app and framework
     repos are private — a private GitHub repo returns 404, not 401, to an
     unauthenticated clone, so plain git never gets to prompt for
-    credentials on its own), clones the standalone FMDK Workbench app and
+    credentials on its own), clones the standalone FMDK Agentic OS app and
     the framework CLI, scaffolds your personal workbench home, configures
     the app, and creates Desktop + Start Menu shortcuts. Safe to re-run —
     already-installed pieces are skipped.
@@ -157,7 +157,7 @@ function Connect-GitHubAccount {
     $ErrorActionPreference = $previousErrorActionPreference
     if (-not $isLoggedIn) {
         Write-Step "Signing in to GitHub..."
-        Write-Host "  A browser window will open - sign in with the GitHub account that has access to the FMDK Workbench repos."
+        Write-Host "  A browser window will open - sign in with the GitHub account that has access to the FMDK Agentic OS repos."
         Invoke-Checked -FriendlyError "GitHub sign-in did not complete. Run 'gh auth login' yourself, then re-run this script." -Action {
             gh auth login --hostname github.com --git-protocol https --web
         }
@@ -305,25 +305,31 @@ function Install-Shortcuts {
     New-HiddenLauncher -Path $launcherScript -TargetScript $binScript
 
     $desktop = [Environment]::GetFolderPath('Desktop')
-    $startMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) 'FMDK Workbench'
+    $startMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) 'FMDK Agentic OS'
     New-Item -ItemType Directory -Force -Path $startMenuDir | Out-Null
 
-    New-AppShortcut -Path (Join-Path $desktop 'FMDK Workbench.lnk') -LauncherScript $launcherScript -Description 'FMDK Workbench'
-    New-AppShortcut -Path (Join-Path $startMenuDir 'FMDK Workbench.lnk') -LauncherScript $launcherScript -Description 'FMDK Workbench'
+    New-AppShortcut -Path (Join-Path $desktop 'FMDK Agentic OS.lnk') -LauncherScript $launcherScript -Description 'FMDK Agentic OS'
+    New-AppShortcut -Path (Join-Path $startMenuDir 'FMDK Agentic OS.lnk') -LauncherScript $launcherScript -Description 'FMDK Agentic OS'
     Write-Host "OK Shortcuts created."
 }
 
 function Start-WorkbenchApp {
-    Write-Step "Launching FMDK Workbench..."
+    Write-Step "Launching FMDK Agentic OS..."
     $binScript = Join-Path $AppDir 'bin\start.mjs'
     $nodePath = (Get-Command node).Source
+    # -WindowStyle Hidden means a crash here is otherwise completely silent —
+    # redirect to log files so a failure to start is actually diagnosable
+    # instead of just "nothing happens."
+    $outLog = Join-Path $InstallRoot 'app-output.log'
+    $errLog = Join-Path $InstallRoot 'app-error.log'
     # bin/start.mjs opens the browser itself once the server actually
     # responds (it polls, with a real timeout) — not a fixed sleep here,
     # which was too short on a cold machine's first launch.
-    Invoke-Checked -FriendlyError "Could not start FMDK Workbench. Try launching it from the shortcut instead." -Action {
-        Start-Process -FilePath $nodePath -ArgumentList "`"$binScript`"" -WorkingDirectory $AppDir -WindowStyle Hidden
+    Invoke-Checked -FriendlyError "Could not start FMDK Agentic OS. Try launching it from the shortcut instead." -Action {
+        Start-Process -FilePath $nodePath -ArgumentList "`"$binScript`"" -WorkingDirectory $AppDir -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
     }
-    Write-Host "OK FMDK Workbench is starting - your browser will open in a few seconds."
+    Write-Host "OK FMDK Agentic OS is starting - your browser will open in a few seconds."
+    Write-Host "  If it doesn't, check $errLog for errors."
 }
 
 function New-UpdateShortcut {
@@ -336,7 +342,7 @@ function New-UpdateShortcut {
         Invoke-RestMethod -Uri "$InstallerDistUrl/update-workbench.ps1" -OutFile $updateScript
     }
 
-    $startMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) 'FMDK Workbench'
+    $startMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) 'FMDK Agentic OS'
     $path = Join-Path $startMenuDir 'Check for Updates.lnk'
     if (Test-Path $path) {
         Write-Host "  Update shortcut already exists - skipping."
@@ -348,14 +354,14 @@ function New-UpdateShortcut {
     $shortcut = $shell.CreateShortcut($path)
     $shortcut.TargetPath = $powershellPath
     $shortcut.Arguments = "-NoExit -ExecutionPolicy Bypass -File `"$updateScript`""
-    $shortcut.Description = 'Check FMDK Workbench for updates'
+    $shortcut.Description = 'Check FMDK Agentic OS for updates'
     $shortcut.Save()
     Write-Host "OK Update shortcut created."
 }
 
 # ==== MAIN ====
 
-Write-Host "FMDK Workbench installer" -ForegroundColor Green
+Write-Host "FMDK Agentic OS installer" -ForegroundColor Green
 Write-Host "This installs Node.js, Git, GitHub CLI, and the Claude CLI, then sets up your workbench."
 Write-Host "Already-installed pieces are skipped, so it's safe to re-run this script."
 
@@ -364,7 +370,7 @@ Install-ClaudeCli
 Connect-ClaudeAccount
 Connect-GitHubAccount
 
-Install-GitClone -Url $AppRepoUrl -Dest $AppDir -FriendlyName 'FMDK Workbench app'
+Install-GitClone -Url $AppRepoUrl -Dest $AppDir -FriendlyName 'FMDK Agentic OS app'
 Install-GitClone -Url $FrameworkRepoUrl -Dest $CliDir -FriendlyName 'Framework CLI'
 
 Initialize-WorkbenchHome -FmdkCliPath (Join-Path $CliDir 'framework\bin\fmdk.js')
@@ -374,5 +380,5 @@ New-UpdateShortcut
 Start-WorkbenchApp
 
 Write-Host ""
-Write-Host "All set! FMDK Workbench is running at http://127.0.0.1:3030" -ForegroundColor Green
-Write-Host "Find it any time via the Desktop shortcut or the Start Menu 'FMDK Workbench' folder."
+Write-Host "All set! FMDK Agentic OS is running at http://127.0.0.1:3030" -ForegroundColor Green
+Write-Host "Find it any time via the Desktop shortcut or the Start Menu 'FMDK Agentic OS' folder."

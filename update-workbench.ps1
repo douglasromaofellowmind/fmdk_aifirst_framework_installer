@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Checks the FMDK Workbench app and CLI for updates and applies them.
+    Checks the FMDK Agentic OS app and CLI for updates and applies them.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -40,8 +40,8 @@ function Update-GitClone {
 }
 
 $InstallRoot = Join-Path $env:LOCALAPPDATA 'FMDK-Workbench'
-Update-GitClone -Dest (Join-Path $InstallRoot 'app') -FriendlyName 'FMDK Workbench'
+Update-GitClone -Dest (Join-Path $InstallRoot 'app') -FriendlyName 'FMDK Agentic OS'
 Update-GitClone -Dest (Join-Path $InstallRoot 'framework') -FriendlyName 'Framework CLI'
 
 Write-Host ""
-Write-Host "Update check complete. If FMDK Workbench is currently running, close it first, then relaunch from your Desktop or Start Menu shortcut to use the update."
+Write-Host "Update check complete. If FMDK Agentic OS is currently running, close it first, then relaunch from your Desktop or Start Menu shortcut to use the update."
