@@ -144,8 +144,18 @@ function Connect-GitHubAccount {
     # sign-in. `gh auth login` does the actual sign-in (a real browser/device
     # flow, no token typed by hand); `gh auth setup-git` wires git itself to
     # use that sign-in for subsequent `git clone`/`git fetch` calls.
-    gh auth status --hostname github.com *> $null
-    if ($LASTEXITCODE -ne 0) {
+    # A plain redirect of a native command's stderr (what `gh auth status`
+    # writes its "not logged in" message to) can get promoted into a
+    # script-terminating error under $ErrorActionPreference = 'Stop', even
+    # though this check only cares about the exit code. Relax that locally,
+    # just for this one check, so "not logged in yet" is treated as the
+    # ordinary, expected first-run case it is, not a fatal error.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    gh auth status --hostname github.com 2>&1 | Out-Null
+    $isLoggedIn = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $previousErrorActionPreference
+    if (-not $isLoggedIn) {
         Write-Step "Signing in to GitHub..."
         Write-Host "  A browser window will open - sign in with the GitHub account that has access to the FMDK Workbench repos."
         Invoke-Checked -FriendlyError "GitHub sign-in did not complete. Run 'gh auth login' yourself, then re-run this script." -Action {
