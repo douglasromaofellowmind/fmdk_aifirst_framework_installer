@@ -358,13 +358,40 @@ function New-UpdateShortcut {
     }
 
     $powershellPath = (Get-Command powershell).Source
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($path)
-    $shortcut.TargetPath = $powershellPath
-    $shortcut.Arguments = "-NoExit -ExecutionPolicy Bypass -File `"$updateScript`""
-    $shortcut.Description = 'Check FMDK Agentic OS for updates'
-    $shortcut.Save()
+    Invoke-Checked -FriendlyError "Could not create the Check for Updates shortcut at $path." -Action {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($path)
+        $shortcut.TargetPath = $powershellPath
+        $shortcut.Arguments = "-NoExit -ExecutionPolicy Bypass -File `"$updateScript`""
+        $shortcut.Description = 'Check FMDK Agentic OS for updates'
+        $shortcut.Save()
+    }
     Write-Host "OK Update shortcut created."
+}
+
+function New-StopShortcut {
+    $stopScript = Join-Path $InstallRoot 'stop-workbench.ps1'
+    Invoke-Checked -FriendlyError "Could not download the stop script. Check your internet connection and try again." -Action {
+        Invoke-RestMethod -Uri "$InstallerDistUrl/stop-workbench.ps1" -OutFile $stopScript
+    }
+
+    $startMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) 'FMDK Agentic OS'
+    $path = Join-Path $startMenuDir 'Stop FMDK Agentic OS.lnk'
+    if (Test-Path $path) {
+        Write-Host "  Stop shortcut already exists - skipping."
+        return
+    }
+
+    $powershellPath = (Get-Command powershell).Source
+    Invoke-Checked -FriendlyError "Could not create the Stop FMDK Agentic OS shortcut at $path." -Action {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($path)
+        $shortcut.TargetPath = $powershellPath
+        $shortcut.Arguments = "-NoExit -ExecutionPolicy Bypass -File `"$stopScript`""
+        $shortcut.Description = 'Stop FMDK Agentic OS'
+        $shortcut.Save()
+    }
+    Write-Host "OK Stop shortcut created."
 }
 
 # ==== MAIN ====
@@ -385,6 +412,7 @@ Initialize-WorkbenchHome -FmdkCliPath (Join-Path $CliDir 'framework\bin\fmdk.js'
 Set-AppConfig
 Install-Shortcuts
 New-UpdateShortcut
+New-StopShortcut
 Start-WorkbenchApp
 
 Write-Host ""

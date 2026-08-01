@@ -40,8 +40,18 @@ function Update-GitClone {
 }
 
 $InstallRoot = Join-Path $env:LOCALAPPDATA 'FMDK-Workbench'
+
+# Stop it first — it holds file locks (its own working directory, loaded
+# modules) that can make a live git reset --hard behave oddly on the app
+# folder while it's running. Guarded with Test-Path since an install from
+# before this script existed won't have it yet.
+$stopScript = Join-Path $InstallRoot 'stop-workbench.ps1'
+if (Test-Path $stopScript) {
+    & $stopScript
+}
+
 Update-GitClone -Dest (Join-Path $InstallRoot 'app') -FriendlyName 'FMDK Agentic OS'
 Update-GitClone -Dest (Join-Path $InstallRoot 'framework') -FriendlyName 'Framework CLI'
 
 Write-Host ""
-Write-Host "Update check complete. If FMDK Agentic OS is currently running, close it first, then relaunch from your Desktop or Start Menu shortcut to use the update."
+Write-Host "Update check complete. Relaunch FMDK Agentic OS from your Desktop or Start Menu shortcut to use the update."
