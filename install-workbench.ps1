@@ -250,7 +250,15 @@ function Set-PersistentEnvVar {
 function Set-AppConfig {
     Write-Step "Configuring the app..."
     Set-PersistentEnvVar -Name 'CLAUDE_DIR' -Value $WorkbenchHome
-    Set-PersistentEnvVar -Name 'FMDK_CLI_PATH' -Value (Join-Path $CliDir 'framework\bin\fmdk.js')
+    # Nitro only honors the NUXT_-prefixed form as a runtime override for a
+    # runtimeConfig key, and the app ships prebuilt, so the bare name alone was
+    # silently ignored — cloning a project failed with "Framework CLI not found.
+    # Reinstall the workbench.", advice that could never have helped because a
+    # reinstall set the same ignored variable again. Both names are written: the
+    # NUXT_ one is what Nitro reads, the bare one is what older builds read.
+    $fmdkCli = Join-Path $CliDir 'framework\bin\fmdk.js'
+    Set-PersistentEnvVar -Name 'FMDK_CLI_PATH' -Value $fmdkCli
+    Set-PersistentEnvVar -Name 'NUXT_FMDK_CLI_PATH' -Value $fmdkCli
     # The Claude Agent SDK's own bundled native CLI binary is an optional,
     # platform-specific dependency resolved via node_modules at install time
     # — absent from the standalone extracted app (no node_modules shipped).
