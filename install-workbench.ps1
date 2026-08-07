@@ -62,39 +62,83 @@ function Install-WingetPackage {
         [Parameter(Mandatory)][string]$Id,
         [Parameter(Mandatory)][string]$CheckCommand,
         [Parameter(Mandatory)][string]$FriendlyName,
-        [string]$Scope = ''
+        [string]$Scope = '',
+        # An optional package enables a FEATURE, not the app itself, so every
+        # failure path warns and the install continues. Without this, one
+        # nice-to-have that a locked-down machine won't take costs the user the
+        # entire workbench.
+        [switch]$Optional,
+        [string]$OptionalNote = ''
     )
     if (Test-CommandAvailable $CheckCommand) {
         Write-Host "  $FriendlyName already installed - skipping."
         return
     }
+
+    # One place to give up, so every bail-out below honours -Optional the same way.
+    $bail = {
+        param($Reason, $Fix)
+        if ($Optional) {
+            Write-Host "! Skipping $FriendlyName - $Reason" -ForegroundColor Yellow
+            if ($OptionalNote) { Write-Host "  $OptionalNote" -ForegroundColor Yellow }
+            Write-Host "  To add it later: $Fix" -ForegroundColor Yellow
+            return
+        }
+        Write-Host "X $Reason" -ForegroundColor Red
+        Write-Host "  $Fix" -ForegroundColor Red
+        exit 1
+    }
+
     Write-Step "Installing $FriendlyName..."
     if (-not (Test-CommandAvailable 'winget')) {
-        Write-Host "X winget is not available on this machine. Install 'App Installer' from the Microsoft Store, then re-run this script." -ForegroundColor Red
-        exit 1
+        & $bail "winget is not available on this machine." "Install 'App Installer' from the Microsoft Store, then re-run this script."
+        return
     }
     # A package with no user-scope installer needs machine-scope, which winget
     # will silently sit on a UAC elevation prompt for on a standard account —
     # fail fast with clear guidance instead of hanging or leaving a confusing
     # winget exit code as the only clue.
     if ($Scope -ne 'user' -and -not (Test-IsAdmin)) {
-        Write-Host "X $FriendlyName needs administrator rights to install on this machine, and this isn't running as admin." -ForegroundColor Red
-        Write-Host "  Ask your IT admin to install $FriendlyName for you, or right-click PowerShell and choose 'Run as administrator', then re-run this script." -ForegroundColor Red
-        exit 1
+        & $bail "$FriendlyName needs administrator rights to install on this machine, and this isn't running as admin." "Ask your IT admin to install $FriendlyName for you, or right-click PowerShell and choose 'Run as administrator', then re-run this script."
+        return
     }
+
     $scopeArgs = @()
     if ($Scope) { $scopeArgs = @('--scope', $Scope) }
+
+    if ($Optional) {
+        winget install --id $Id -e @scopeArgs --source winget --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "! $FriendlyName did not install (winget exit $LASTEXITCODE) - continuing without it." -ForegroundColor Yellow
+            if ($OptionalNote) { Write-Host "  $OptionalNote" -ForegroundColor Yellow }
+            Write-Host "  To add it later: winget install -e --id $Id" -ForegroundColor Yellow
+        }
+        return
+    }
+
     Invoke-Checked -FriendlyError "Could not install $FriendlyName. Check your internet connection and try again." -Action {
         winget install --id $Id -e @scopeArgs --source winget --accept-package-agreements --accept-source-agreements
     }
 }
 
 function Install-Runtime {
-    Write-Step "Setting up the runtime (Node.js, Git, GitHub CLI)..."
+    Write-Step "Setting up the runtime (Node.js, Git, GitHub CLI, Azure CLI)..."
     # OpenJS.NodeJS.LTS's winget manifest has no user-scope installer (checked 2026-07 against microsoft/winget-pkgs) — needs admin rights, handled by the elevation check in Install-WingetPackage. Git.Git does support user scope. GitHub.cli's scope support is unconfirmed — left unset so the same elevation check applies if it turns out to need it too.
     Install-WingetPackage -Id 'OpenJS.NodeJS.LTS' -CheckCommand 'node' -FriendlyName 'Node.js'
     Install-WingetPackage -Id 'Git.Git' -CheckCommand 'git' -FriendlyName 'Git' -Scope 'user'
+    # Required, not optional: the app and framework repos are private, and a
+    # private GitHub repo answers 404 rather than 401, so a plain clone never
+    # gets a challenge to prompt against. `gh auth login` is what makes the
+    # clones below work at all.
     Install-WingetPackage -Id 'GitHub.cli' -CheckCommand 'gh' -FriendlyName 'GitHub CLI'
+    # Every live connection (Project Operations, Azure DevOps, SharePoint) signs
+    # in as the `az` user — no PAT, no app registration — so without this the
+    # workbench can only ever reach sample data and Excel imports. Optional
+    # because that fallback is genuinely usable, and because the MSI is
+    # machine-scope: a standard account would otherwise lose the whole install
+    # over a connector it may not even need.
+    Install-WingetPackage -Id 'Microsoft.AzureCLI' -CheckCommand 'az' -FriendlyName 'Azure CLI' `
+        -Optional -OptionalNote 'Your workbench still works on Excel imports and sample data; live Project Operations, Azure DevOps and SharePoint need this.'
 
     # winget-installed tools need a PATH refresh for this process before Get-Command can see them.
     $env:Path = $env:Path + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
@@ -291,6 +335,22 @@ shell.Run """$nodePath"" ""$TargetScript""", 0, False
     Set-Content -Path $Path -Value $vbs -Encoding Default
 }
 
+<#
+.SYNOPSIS
+    The Fellowmind marker for shortcut icons, or a sensible stand-in.
+.DESCRIPTION
+    Ships with the built React app (ui-react/public/favicon.ico -> react-dist/favicon.ico).
+    Before this existed the shortcuts wore node.exe's and powershell.exe's icons. Falls back
+    rather than failing: an older app clone, or a layout change, must still yield a working
+    shortcut.
+#>
+function Get-ShortcutIcon {
+    param([Parameter(Mandatory)][string]$Fallback)
+    $icon = Join-Path $AppDir 'react-dist\favicon.ico'
+    if (Test-Path $icon) { return $icon }
+    return $Fallback
+}
+
 function New-AppShortcut {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -302,13 +362,13 @@ function New-AppShortcut {
         return
     }
     $wscriptPath = (Get-Command wscript).Source
-    $nodePath = (Get-Command node).Source
+    $iconPath = Get-ShortcutIcon (Get-Command node).Source
     Invoke-Checked -FriendlyError "Could not create the shortcut at $Path." -Action {
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($Path)
         $shortcut.TargetPath = $wscriptPath
         $shortcut.Arguments = "`"$LauncherScript`""
-        $shortcut.IconLocation = $nodePath
+        $shortcut.IconLocation = $iconPath
         $shortcut.Description = $Description
         $shortcut.Save()
     }
@@ -371,6 +431,7 @@ function New-UpdateShortcut {
         $shortcut = $shell.CreateShortcut($path)
         $shortcut.TargetPath = $powershellPath
         $shortcut.Arguments = "-NoExit -ExecutionPolicy Bypass -File `"$updateScript`""
+        $shortcut.IconLocation = Get-ShortcutIcon $powershellPath
         $shortcut.Description = 'Check FMDK Agentic OS for updates'
         $shortcut.Save()
     }
@@ -396,6 +457,7 @@ function New-StopShortcut {
         $shortcut = $shell.CreateShortcut($path)
         $shortcut.TargetPath = $powershellPath
         $shortcut.Arguments = "-NoExit -ExecutionPolicy Bypass -File `"$stopScript`""
+        $shortcut.IconLocation = Get-ShortcutIcon $powershellPath
         $shortcut.Description = 'Stop FMDK Agentic OS'
         $shortcut.Save()
     }
@@ -405,7 +467,7 @@ function New-StopShortcut {
 # ==== MAIN ====
 
 Write-Host "FMDK Agentic OS installer" -ForegroundColor Green
-Write-Host "This installs Node.js, Git, GitHub CLI, and the Claude CLI, then sets up your workbench."
+Write-Host "This installs Node.js, Git, GitHub CLI, the Azure CLI, and the Claude CLI, then sets up your workbench."
 Write-Host "Already-installed pieces are skipped, so it's safe to re-run this script."
 
 Install-Runtime
