@@ -317,16 +317,32 @@ function Set-PersistentEnvVar {
     $current = [Environment]::GetEnvironmentVariable($Name, 'User')
     if ($current -eq $Value) {
         Write-Host "  $Name already set - skipping."
-        return
+        return $false
     }
     [Environment]::SetEnvironmentVariable($Name, $Value, 'User')
     Set-Item -Path "Env:$Name" -Value $Value
     Write-Host "OK $Name set."
+    return $true
+}
+
+function Stop-RunningApp {
+    # A running instance only ever reads these env vars once, at its own
+    # startup — updating them here does nothing for it, and the launch
+    # shortcut reuses an already-running instance rather than restarting it
+    # (see the README), so a stale process would silently keep using the old
+    # value. Same reasoning update-workbench.ps1 already applies before
+    # pulling updates; a config change on re-run needs the same treatment.
+    $conn = Get-NetTCPConnection -LocalPort 3030 -State Listen -ErrorAction SilentlyContinue
+    if ($conn) {
+        Stop-Process -Id $conn.OwningProcess -Force
+        Write-Host "  Stopped the running FMDK Agentic OS instance so it picks up the new config on next launch."
+    }
 }
 
 function Set-AppConfig {
     Write-Step "Configuring the app..."
-    Set-PersistentEnvVar -Name 'CLAUDE_DIR' -Value $WorkbenchHome
+    $configChanged = $false
+    $configChanged = (Set-PersistentEnvVar -Name 'CLAUDE_DIR' -Value $WorkbenchHome) -or $configChanged
     # Nitro only honors the NUXT_-prefixed form as a runtime override for a
     # runtimeConfig key, and the app ships prebuilt, so the bare name alone was
     # silently ignored — cloning a project failed with "Framework CLI not found.
@@ -334,8 +350,8 @@ function Set-AppConfig {
     # reinstall set the same ignored variable again. Both names are written: the
     # NUXT_ one is what Nitro reads, the bare one is what older builds read.
     $fmdkCli = Join-Path $CliDir 'framework\bin\fmdk.js'
-    Set-PersistentEnvVar -Name 'FMDK_CLI_PATH' -Value $fmdkCli
-    Set-PersistentEnvVar -Name 'NUXT_FMDK_CLI_PATH' -Value $fmdkCli
+    $configChanged = (Set-PersistentEnvVar -Name 'FMDK_CLI_PATH' -Value $fmdkCli) -or $configChanged
+    $configChanged = (Set-PersistentEnvVar -Name 'NUXT_FMDK_CLI_PATH' -Value $fmdkCli) -or $configChanged
     # The Claude Agent SDK's own bundled native CLI binary is an optional,
     # platform-specific dependency resolved via node_modules at install time
     # — absent from the standalone extracted app (no node_modules shipped).
@@ -349,7 +365,10 @@ function Set-AppConfig {
     # (it fails with EFTYPE, "inappropriate file type") — instead of the
     # real claude.exe Install-ClaudeCli just verified exists.
     $claudeCliPath = if (Test-Path $NativeClaudeExe) { $NativeClaudeExe } else { (Get-Command claude).Source }
-    Set-PersistentEnvVar -Name 'NUXT_CLAUDE_CLI_PATH' -Value $claudeCliPath
+    $configChanged = (Set-PersistentEnvVar -Name 'NUXT_CLAUDE_CLI_PATH' -Value $claudeCliPath) -or $configChanged
+    if ($configChanged) {
+        Stop-RunningApp
+    }
 }
 
 function New-HiddenLauncher {
