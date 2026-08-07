@@ -37,6 +37,17 @@ function Invoke-Checked {
         [Parameter(Mandatory)][scriptblock]$Action,
         [Parameter(Mandatory)][string]$FriendlyError
     )
+    # Native commands (npm, winget, gh, git...) routinely write informational
+    # or warning text to stderr on an otherwise-successful run — e.g. npm's
+    # advisory "npm warn allow-scripts ..." line during a global install.
+    # Under $ErrorActionPreference = 'Stop', any stderr line from a native
+    # command gets promoted into a script-terminating error regardless of
+    # exit code, so this function would report success as failure. Relax it
+    # locally to the exit-code check this function actually performs (same
+    # fix already applied to the one-off `gh auth status` check in
+    # Connect-GitHubAccount — this covers every other Invoke-Checked caller).
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
         # Reset before every call so the check below reflects THIS action, not
         # a stale exit code left over from an earlier native command elsewhere
@@ -54,6 +65,8 @@ function Invoke-Checked {
         Write-Host "X $FriendlyError" -ForegroundColor Red
         Write-Host "  ($($_.Exception.Message))" -ForegroundColor DarkGray
         exit 1
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
     }
 }
 
@@ -158,15 +171,35 @@ function Install-Runtime {
     Write-Host "OK Node.js, Git, and GitHub CLI ready."
 }
 
+$NativeClaudeExe = Join-Path $env:USERPROFILE '.local\bin\claude.exe'
+
 function Install-ClaudeCli {
-    if (Test-CommandAvailable 'claude') {
+    if (Test-Path $NativeClaudeExe) {
         Write-Host "  Claude CLI already installed - skipping."
         return
     }
     Write-Step "Installing the Claude CLI..."
+    # `npm install -g @anthropic-ai/claude-code` only produces a real
+    # claude.exe once its postinstall (and its win32-x64 optional
+    # dependency's own postinstall) both run and link the native binary into
+    # place — recent npm gates install scripts behind --allow-scripts, and
+    # even granted, npm still creates `claude.cmd` / `claude.ps1` text shims
+    # alongside it. Those shims run fine from an interactive shell, but the
+    # Claude Agent SDK spawns the CLI directly with no shell, and Windows
+    # can't execute a batch/PowerShell script that way — it fails with
+    # EFTYPE ("inappropriate file type"). Anthropic's native installer
+    # sidesteps all of that: one real claude.exe, nothing to link or shim.
     Invoke-Checked -FriendlyError "Could not install the Claude CLI. Check your internet connection and try again." -Action {
-        npm install -g @anthropic-ai/claude-code
+        Invoke-Expression (Invoke-RestMethod 'https://claude.ai/install.ps1')
     }
+    if (-not (Test-Path $NativeClaudeExe)) {
+        Write-Host "X Claude CLI installer finished but $NativeClaudeExe was not found." -ForegroundColor Red
+        exit 1
+    }
+    # The installer updates the persistent User PATH, but this process's own
+    # PATH won't see that until a new shell starts — same class of gap as
+    # the winget PATH refresh in Install-Runtime.
+    $env:Path = $env:Path + ';' + (Split-Path $NativeClaudeExe -Parent)
     Write-Host "OK Claude CLI installed."
 }
 
@@ -310,7 +343,13 @@ function Set-AppConfig {
     # Nitro only honors a NUXT_-prefixed env var as a runtime override for
     # any runtimeConfig key (confirmed the hard way earlier in this same
     # installer, for reactDistDir/REACT_DIST_DIR) — not the bare name.
-    Set-PersistentEnvVar -Name 'NUXT_CLAUDE_CLI_PATH' -Value (Get-Command claude).Source
+    # Use the known native-install path directly rather than `Get-Command
+    # claude`: if a stray npm-based install is also on PATH, that resolves
+    # `claude.cmd` / `claude.ps1` — text shims the SDK can't spawn directly
+    # (it fails with EFTYPE, "inappropriate file type") — instead of the
+    # real claude.exe Install-ClaudeCli just verified exists.
+    $claudeCliPath = if (Test-Path $NativeClaudeExe) { $NativeClaudeExe } else { (Get-Command claude).Source }
+    Set-PersistentEnvVar -Name 'NUXT_CLAUDE_CLI_PATH' -Value $claudeCliPath
 }
 
 function New-HiddenLauncher {
