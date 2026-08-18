@@ -395,7 +395,7 @@ shell.Run """$nodePath"" ""$TargetScript""", 0, False
 
 <#
 .SYNOPSIS
-    The Fellowmind marker for shortcut icons, or a sensible stand-in.
+    The Hive AI mark for shortcut icons, or a sensible stand-in.
 .DESCRIPTION
     Ships with the built React app (ui-react/public/favicon.ico -> react-dist/favicon.ico).
     Before this existed the shortcuts wore node.exe's and powershell.exe's icons. Falls back
@@ -415,10 +415,9 @@ function New-AppShortcut {
         [Parameter(Mandatory)][string]$LauncherScript,
         [Parameter(Mandatory)][string]$Description
     )
-    if (Test-Path $Path) {
-        Write-Host "  Shortcut already exists at $Path - skipping."
-        return
-    }
+    # Rewritten every run rather than skipped when it already exists: every value below is
+    # deterministic, so re-saving is a no-op EXCEPT for the icon — and skipping was why a
+    # brand change never reached anyone who had already installed.
     $wscriptPath = (Get-Command wscript).Source
     $iconPath = Get-ShortcutIcon (Get-Command node).Source
     Invoke-Checked -FriendlyError "Could not create the shortcut at $Path." -Action {
@@ -444,7 +443,7 @@ function Install-Shortcuts {
 
     New-AppShortcut -Path (Join-Path $desktop 'FMDK Agentic OS.lnk') -LauncherScript $launcherScript -Description 'FMDK Agentic OS'
     New-AppShortcut -Path (Join-Path $startMenuDir 'FMDK Agentic OS.lnk') -LauncherScript $launcherScript -Description 'FMDK Agentic OS'
-    Write-Host "OK Shortcuts created."
+    Write-Host "OK Shortcuts written."
 }
 
 function Start-WorkbenchApp {
@@ -478,11 +477,6 @@ function New-UpdateShortcut {
 
     $startMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) 'FMDK Agentic OS'
     $path = Join-Path $startMenuDir 'Check for Updates.lnk'
-    if (Test-Path $path) {
-        Write-Host "  Update shortcut already exists - skipping."
-        return
-    }
-
     $powershellPath = (Get-Command powershell).Source
     Invoke-Checked -FriendlyError "Could not create the Check for Updates shortcut at $path." -Action {
         $shell = New-Object -ComObject WScript.Shell
@@ -493,7 +487,7 @@ function New-UpdateShortcut {
         $shortcut.Description = 'Check FMDK Agentic OS for updates'
         $shortcut.Save()
     }
-    Write-Host "OK Update shortcut created."
+    Write-Host "OK Update shortcut written."
 }
 
 function New-StopShortcut {
@@ -504,11 +498,6 @@ function New-StopShortcut {
 
     $startMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) 'FMDK Agentic OS'
     $path = Join-Path $startMenuDir 'Stop FMDK Agentic OS.lnk'
-    if (Test-Path $path) {
-        Write-Host "  Stop shortcut already exists - skipping."
-        return
-    }
-
     $powershellPath = (Get-Command powershell).Source
     Invoke-Checked -FriendlyError "Could not create the Stop FMDK Agentic OS shortcut at $path." -Action {
         $shell = New-Object -ComObject WScript.Shell
@@ -519,7 +508,7 @@ function New-StopShortcut {
         $shortcut.Description = 'Stop FMDK Agentic OS'
         $shortcut.Save()
     }
-    Write-Host "OK Stop shortcut created."
+    Write-Host "OK Stop shortcut written."
 }
 
 # ==== MAIN ====
