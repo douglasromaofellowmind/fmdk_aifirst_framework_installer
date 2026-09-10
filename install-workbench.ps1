@@ -64,7 +64,12 @@ function Invoke-Checked {
         Write-Host ""
         Write-Host "X $FriendlyError" -ForegroundColor Red
         Write-Host "  ($($_.Exception.Message))" -ForegroundColor DarkGray
-        exit 1
+        # Not `exit` — the documented install path runs this script via `irm | iex`,
+        # which dot-sources it into the caller's own interactive session. `exit` there
+        # kills that whole window, taking this message with it before it can be read
+        # (PowerShell/PowerShell#8816). `throw` unwinds to the one top-level catch at
+        # the bottom of this file instead, which pauses and stops safely.
+        throw $FriendlyError
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
     }
@@ -99,7 +104,7 @@ function Install-WingetPackage {
         }
         Write-Host "X $Reason" -ForegroundColor Red
         Write-Host "  $Fix" -ForegroundColor Red
-        exit 1
+        throw $Reason
     }
 
     Write-Step "Installing $FriendlyName..."
@@ -158,15 +163,15 @@ function Install-Runtime {
 
     if (-not (Test-CommandAvailable 'node')) {
         Write-Host "X Node.js installed but not found on PATH. Close this window, reopen PowerShell, and re-run this script." -ForegroundColor Red
-        exit 1
+        throw "Node.js not found on PATH"
     }
     if (-not (Test-CommandAvailable 'git')) {
         Write-Host "X Git installed but not found on PATH. Close this window, reopen PowerShell, and re-run this script." -ForegroundColor Red
-        exit 1
+        throw "Git not found on PATH"
     }
     if (-not (Test-CommandAvailable 'gh')) {
         Write-Host "X GitHub CLI installed but not found on PATH. Close this window, reopen PowerShell, and re-run this script." -ForegroundColor Red
-        exit 1
+        throw "GitHub CLI not found on PATH"
     }
     Write-Host "OK Node.js, Git, and GitHub CLI ready."
 }
@@ -194,7 +199,7 @@ function Install-ClaudeCli {
     }
     if (-not (Test-Path $NativeClaudeExe)) {
         Write-Host "X Claude CLI installer finished but $NativeClaudeExe was not found." -ForegroundColor Red
-        exit 1
+        throw "Claude CLI not found after install"
     }
     # The installer updates the persistent User PATH, but this process's own
     # PATH won't see that until a new shell starts — same class of gap as
@@ -512,26 +517,45 @@ function New-StopShortcut {
 }
 
 # ==== MAIN ====
+# Wrapped in one try/catch so every failure (every `throw` above) lands in ONE
+# place instead of calling `exit` at the point of failure. The documented install
+# path is `irm <url> | iex`, which dot-sources this script into the caller's own
+# interactive PowerShell session — `exit` there would kill that whole window,
+# taking the error with it (PowerShell/PowerShell#8816). `return` only unwinds
+# this script, leaving the caller's session alive to read the error above. The
+# Read-Host pause covers the other launch path (`powershell -File`, a genuinely
+# separate process) where the window closes on completion regardless of
+# return/exit unless -NoExit was passed — pausing is the only thing that keeps
+# that one open long enough to read.
+try {
+    Write-Host "FMDK Agentic OS installer" -ForegroundColor Green
+    Write-Host "This installs Node.js, Git, GitHub CLI, the Azure CLI, and the Claude CLI, then sets up your workbench."
+    Write-Host "Already-installed pieces are skipped, so it's safe to re-run this script."
 
-Write-Host "FMDK Agentic OS installer" -ForegroundColor Green
-Write-Host "This installs Node.js, Git, GitHub CLI, the Azure CLI, and the Claude CLI, then sets up your workbench."
-Write-Host "Already-installed pieces are skipped, so it's safe to re-run this script."
+    Install-Runtime
+    Install-ClaudeCli
+    Connect-ClaudeAccount
+    Connect-GitHubAccount
 
-Install-Runtime
-Install-ClaudeCli
-Connect-ClaudeAccount
-Connect-GitHubAccount
+    Install-GitClone -Url $AppRepoUrl -Dest $AppDir -FriendlyName 'FMDK Agentic OS app'
+    Install-GitClone -Url $FrameworkRepoUrl -Dest $CliDir -FriendlyName 'Framework CLI'
 
-Install-GitClone -Url $AppRepoUrl -Dest $AppDir -FriendlyName 'FMDK Agentic OS app'
-Install-GitClone -Url $FrameworkRepoUrl -Dest $CliDir -FriendlyName 'Framework CLI'
+    Initialize-WorkbenchHome -FmdkCliPath (Join-Path $CliDir 'framework\bin\fmdk.js')
+    Set-AppConfig
+    Install-Shortcuts
+    New-UpdateShortcut
+    New-StopShortcut
+    Start-WorkbenchApp
 
-Initialize-WorkbenchHome -FmdkCliPath (Join-Path $CliDir 'framework\bin\fmdk.js')
-Set-AppConfig
-Install-Shortcuts
-New-UpdateShortcut
-New-StopShortcut
-Start-WorkbenchApp
-
-Write-Host ""
-Write-Host "All set! FMDK Agentic OS is running at http://127.0.0.1:3030" -ForegroundColor Green
-Write-Host "Find it any time via the Desktop shortcut or the Start Menu 'FMDK Agentic OS' folder."
+    Write-Host ""
+    Write-Host "All set! FMDK Agentic OS is running at http://127.0.0.1:3030" -ForegroundColor Green
+    Write-Host "Find it any time via the Desktop shortcut or the Start Menu 'FMDK Agentic OS' folder."
+} catch {
+    Write-Host ""
+    Write-Host "Setup did not finish. See the error above for what happened." -ForegroundColor Red
+    Write-Host "Fix that, then re-run this script - already-installed pieces are skipped." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Press Enter to close this window..." -ForegroundColor DarkGray
+    Read-Host | Out-Null
+    return
+}
