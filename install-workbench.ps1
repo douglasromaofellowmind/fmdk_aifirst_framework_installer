@@ -41,14 +41,22 @@ function Invoke-Step {
         [Parameter(Mandatory, Position = 0)][string]$Name,
         [Parameter(Mandatory, Position = 1)][scriptblock]$Action,
         # The step prompts in the console: say so on the row and bring the console forward.
-        [switch]$Handoff
+        [switch]$Handoff,
+        # What this PARTICULAR hand-off asks of a person. One shared sentence said "the code goes in
+        # the box below" for both sign-ins — true for Claude, where a code is pasted IN, and wrong for
+        # GitHub, where the code comes OUT to be typed into the browser and the entry box is
+        # deliberately collapsed. It sent a user hunting for a text box that was not there (ADR-063).
+        [string]$HandoffHint = ''
     )
     $script:StepNumber++
     $row = $script:StepNumber - 1
     $watch = [Diagnostics.Stopwatch]::StartNew()
     Write-Host ""
     Write-Host "[$($script:StepNumber)/$($script:StepCount)] $Name" -ForegroundColor Cyan
-    $hint = if ($Handoff) { if ($script:Ui) { 'Sign in in the browser; the code goes in the box below' } else { 'Finish signing in in this window' } } else { '' }
+    $hint = if ($Handoff) {
+        if ($script:Ui) { if ($HandoffHint) { $HandoffHint } else { 'Sign in in the browser, then follow the prompt below' } }
+        else { 'Finish signing in in this window' }
+    } else { '' }
     Set-StepRow -Index $row -State running -Hint $hint
     Set-WindowHeader -Status $Name -Completed $row
     try {
@@ -226,8 +234,20 @@ $NativeClaudeExe = Join-Path $env:USERPROFILE '.local\bin\claude.exe'
 function Install-ClaudeCli {
     if (Test-Path $NativeClaudeExe) {
         Write-Host "  Claude CLI already installed - skipping."
-        return
+    } else {
+        Install-ClaudeCliFresh
     }
+    # BOTH paths, never just the install one (ADR-063). The native installer puts claude.exe on the
+    # persistent User PATH, which a RUNNING process cannot see — so on a machine where the exe is
+    # already there but that PATH entry is missing, an early `return` here left every later `claude`
+    # call failing with "is not recognized", in a step that had just reported OK in 16ms. Seen on two
+    # clean Windows PCs; both were wedged permanently, since no re-run and no new window can fix a
+    # User PATH that never had the entry. The sign-in itself no longer depends on this (it calls the
+    # exe by path), but the user's own session after the installer still should.
+    $env:Path = $env:Path + ';' + (Split-Path $NativeClaudeExe -Parent)
+}
+
+function Install-ClaudeCliFresh {
     Write-Step "Installing the Claude CLI..."
     # `npm install -g @anthropic-ai/claude-code` only produces a real
     # claude.exe once its postinstall (and its win32-x64 optional
@@ -246,10 +266,6 @@ function Install-ClaudeCli {
         Write-Host "X Claude CLI installer finished but $NativeClaudeExe was not found." -ForegroundColor Red
         throw "Claude CLI not found after install"
     }
-    # The installer updates the persistent User PATH, but this process's own
-    # PATH won't see that until a new shell starts — same class of gap as
-    # the winget PATH refresh in Install-Runtime.
-    $env:Path = $env:Path + ';' + (Split-Path $NativeClaudeExe -Parent)
     Write-Host "OK Claude CLI installed."
 }
 
@@ -274,13 +290,25 @@ function Test-EntraJoined {
 # `claude auth status` answers as JSON ({"loggedIn":true,"email":...}). Older
 # CLIs or a parse failure fall through to the sign-in, never to a false skip.
 function Get-ClaudeSignIn {
+    # "Cannot run the CLI" is NOT "not signed in" (ADR-063). This used to answer $null for both, so a
+    # claude.exe that was present but unreachable reported as a missing session — the run then tried
+    # `claude auth login`, failed for the same reason three steps from the cause, and told the user to
+    # run by hand the very command that could not run. Signing in manually could never clear it: the
+    # check that would notice was broken by the identical fault. So an absent exe throws, naming the
+    # path, and only a CLI that RAN and reported no session returns $null.
+    if (-not (Test-Path $NativeClaudeExe)) {
+        throw "The Claude CLI is not at $NativeClaudeExe. Re-run this script to install it."
+    }
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'SilentlyContinue'
     try {
-        $status = (& claude auth status 2>&1 | Out-String | ConvertFrom-Json)
+        # By path, never the bare word: a stray npm install on PATH resolves claude.cmd/claude.ps1,
+        # text shims that fail with EFTYPE. Set-AppConfig already resolves it this way.
+        $status = (& $NativeClaudeExe auth status 2>&1 | Out-String | ConvertFrom-Json)
         if ($status -and $status.loggedIn) { return $status }
         return $null
     } catch {
+        # An older CLI, or output that isn't JSON: fall through to the sign-in, never to a false skip.
         return $null
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
@@ -296,11 +324,13 @@ function Connect-ClaudeAccount {
     }
     Write-Step "Signing in to Claude..."
     $sso = Test-EntraJoined
+    # The command named in the error is the one a person types, so it stays the friendly `claude ...`
+    # form — but what this script RUNS is the exe it verified, not a word it hopes is on PATH.
     $command = if ($sso) { "claude auth login --sso" } else { "claude auth login" }
     if ($sso) { Write-Host "  Company-managed PC - using your organisation's single sign-on." }
     Write-Host "  A browser window will open - sign in with your Claude account."
     Invoke-Checked -FriendlyError "Claude sign-in did not complete. Run '$command' yourself, then re-run this script." -Action {
-        if ($sso) { claude auth login --sso } else { claude auth login }
+        if ($sso) { & $NativeClaudeExe auth login --sso } else { & $NativeClaudeExe auth login }
     }
     Write-Host "OK Signed in to Claude."
 }
@@ -404,8 +434,17 @@ function Install-GitClone {
     if (Test-Path $tempDest) {
         Remove-Item -Recurse -Force $tempDest
     }
-    Invoke-Checked -FriendlyError "Could not download $FriendlyName. Check your internet connection and sign-in, then try again." -Action {
-        git clone --quiet -- $Url $tempDest
+    # Show git's OWN message on failure (ADR-063). `Invoke-Checked` throws "exited with code N", and
+    # with the message discarded a permissions problem is indistinguishable from a dead network: a
+    # private GitHub repo you cannot see answers 404, not 401 — deliberately, so it does not reveal
+    # the repo exists (the same fact Connect-GitHubAccount's comment records) — and git exits 128.
+    # Seen live: a user cloned the app repo fine and failed here four seconds later, reading
+    # "Check your internet connection and sign-in" when both were working and only access was missing.
+    Invoke-Checked -FriendlyError "Could not download $FriendlyName. You may not have access to this repository - ask the framework team to check. If you do have access, check your internet connection and sign-in, then try again." -Action {
+        $cloneOutput = & git clone --quiet -- $Url $tempDest 2>&1
+        if ($LASTEXITCODE -ne 0 -and $cloneOutput) {
+            $cloneOutput | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+        }
     }
     Rename-Item -Path $tempDest -NewName (Split-Path $Dest -Leaf)
     Write-Host "OK $FriendlyName downloaded."
@@ -876,7 +915,10 @@ namespace Fmdk {
             try {
                 [Fmdk.ConsoleInput]::TypeLine('')
                 $continue.IsEnabled = $false
-                $promptText.Text = 'Opening github.com - enter the code there, then come back.'
+                # Not "Opening github.com" — this button types the Enter gh is waiting on; the browser
+                # was opened by the URL watcher above when the code appeared (ADR-063). Claiming the
+                # open here was false on exactly the machines the window exists for.
+                $promptText.Text = 'Enter the code in the browser, then come back - this window carries on by itself.'
             } catch {
                 $promptCheck.Text = "Could not type into the console: $($_.Exception.Message). Press Enter in the PowerShell window instead."
                 $promptCheck.Foreground = $red
@@ -1012,6 +1054,21 @@ namespace Fmdk {
                     try { Start-Process $url } catch { $ui.ApplyError = "open browser: $($_.Exception.Message)" }
                     if ($ui.CurrentRow -ne $null) {
                         $w.FindName("Hint$($ui.CurrentRow)").Text = 'Sign in in the browser that just opened'
+                    }
+                }
+                # GitHub says it differently, and none of the three phrasings above match it, so the
+                # window never opened its device URL while `gh` — whose own browser launch does not
+                # work on these machines either — was told to (ADR-063). Kept as its own match rather
+                # than folded in above: that one waits for a following line to know a wrapped URL
+                # finished arriving, and gh's prompt is followed by NOTHING until Enter is pressed, so
+                # the guard would withhold the open until the moment it stopped being useful. gh's
+                # trailing " in your browser" is its own proof the URL arrived whole.
+                $ghUrl = [regex]::Match($ui.LogText, 'Press Enter to open (https?://\S+) in your browser')
+                if ($ghUrl.Success -and -not $ui.OpenedUrls.Contains($ghUrl.Groups[1].Value)) {
+                    [void]$ui.OpenedUrls.Add($ghUrl.Groups[1].Value)
+                    try { Start-Process $ghUrl.Groups[1].Value } catch { $ui.ApplyError = "open browser: $($_.Exception.Message)" }
+                    if ($ui.CurrentRow -ne $null) {
+                        $w.FindName("Hint$($ui.CurrentRow)").Text = 'Enter the code below in the browser that just opened'
                     }
                 }
                 # Claude: the CLI's paste prompt opens the entry box; a later
@@ -1185,8 +1242,8 @@ function Stop-InstallWindow {
 $steps = @(
     @{ Name = 'Set up the runtime (Node.js, Git, GitHub CLI, Azure CLI)'; Action = { Install-Runtime } }
     @{ Name = 'Install the Claude CLI'; Action = { Install-ClaudeCli } }
-    @{ Name = 'Sign in to Claude'; Action = { Connect-ClaudeAccount }; Handoff = $true }
-    @{ Name = 'Sign in to GitHub'; Action = { Connect-GitHubAccount }; Handoff = $true }
+    @{ Name = 'Sign in to Claude'; Action = { Connect-ClaudeAccount }; Handoff = $true; Hint = 'Sign in in the browser, then paste the code in the box below' }
+    @{ Name = 'Sign in to GitHub'; Action = { Connect-GitHubAccount }; Handoff = $true; Hint = 'Copy the code below, then enter it in the browser that opens' }
     @{ Name = 'Download the FMDK Agentic OS app'; Action = { Install-GitClone -Url $AppRepoUrl -Dest $AppDir -FriendlyName 'FMDK Agentic OS app' } }
     @{ Name = 'Download the Framework CLI'; Action = { Install-GitClone -Url $FrameworkRepoUrl -Dest $CliDir -FriendlyName 'Framework CLI' } }
     @{ Name = 'Set up your workbench home'; Action = { Initialize-WorkbenchHome -FmdkCliPath (Join-Path $CliDir 'framework\bin\fmdk.js') } }
@@ -1207,7 +1264,7 @@ try {
         # Cooperative Cancel: read between steps only, so winget and git are
         # never killed mid-write; the finished steps are skipped on a re-run.
         if ($script:Ui -and $script:Ui.Cancel) { $cancelled = $true; break }
-        Invoke-Step -Name $step.Name -Action $step.Action -Handoff:([bool]$step.Handoff)
+        Invoke-Step -Name $step.Name -Action $step.Action -Handoff:([bool]$step.Handoff) -HandoffHint ([string]$step.Hint)
     }
     if ($cancelled) {
         Write-Host ""
