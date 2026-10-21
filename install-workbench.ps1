@@ -446,7 +446,25 @@ function Install-GitClone {
             $cloneOutput | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
         }
     }
-    Rename-Item -Path $tempDest -NewName (Split-Path $Dest -Leaf)
+    # The clone succeeded, but Windows will not rename a directory while any file inside it is open,
+    # and real-time antivirus scanning holds the files git just wrote for a few seconds. Seen live
+    # (AB#235486): the ~1,800-file framework repo failed with "Access ... is denied" seconds after
+    # the smaller app repo renamed fine. Wait the scan out instead of failing a good download (ADR-096).
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            Rename-Item -Path $tempDest -NewName (Split-Path $Dest -Leaf) -ErrorAction Stop
+            break
+        } catch {
+            if ($attempt -ge 30) {
+                $friendly = "Downloaded $FriendlyName, but could not move it into place - another program (usually antivirus scanning the new files) still has them open. Wait a minute, then re-run this script."
+                Write-Host ""
+                Write-Host "X $friendly" -ForegroundColor Red
+                Write-Host "  ($($_.Exception.Message))" -ForegroundColor DarkGray
+                throw $friendly
+            }
+            Start-Sleep -Seconds 1
+        }
+    }
     Write-Host "OK $FriendlyName downloaded."
 }
 
