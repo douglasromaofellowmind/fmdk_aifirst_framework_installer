@@ -486,6 +486,14 @@ function Initialize-WorkbenchHome {
         Invoke-Checked -FriendlyError "Could not set up your workbench home. Try re-running this script." -Action {
             node $FmdkCliPath init --workbench --force
         }
+        # ADR-104: back the new workbench up to a private repo in the person's own GitHub
+        # account (GitHub is signed in by an earlier step). Non-fatal: the app's Overview
+        # offers "Back up to my GitHub" as the retry.
+        Write-Step "Backing up your workbench to your private GitHub repository..."
+        node $FmdkCliPath connect-repo --github-personal
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  Not backed up yet - open the app and press 'Back up to my GitHub' on Overview." -ForegroundColor Yellow
+        }
     } finally {
         Pop-Location
     }
