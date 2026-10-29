@@ -30,7 +30,7 @@ function Format-Elapsed {
 }
 
 $script:StepNumber = 0
-$script:StepCount = 10
+$script:StepCount = 11
 
 # One row of the install: the -Name is the label a person reads (in the console
 # today, in the window row and the details log next), the -Action is the
@@ -267,6 +267,44 @@ function Install-ClaudeCliFresh {
         throw "Claude CLI not found after install"
     }
     Write-Host "OK Claude CLI installed."
+}
+
+# AB#236175 (S5): the Workbench's Copilot engine (@github/copilot-sdk) cannot use its bundled
+# runtime in the standalone build, so it needs an installed Copilot CLI named by
+# NUXT_COPILOT_CLI_PATH. OPTIONAL: any failure here warns and returns - Claude still works.
+function Find-CopilotCli {
+    # By full path, never the bare word: npm leaves copilot.cmd / copilot.ps1 shims, and the .ps1
+    # cannot be spawned. Prefer the .exe/.cmd, the way the Claude step avoids claude.cmd's siblings.
+    $found = @(Get-Command copilot -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -match '\.(exe|cmd)$' })
+    if ($found.Count -gt 0) { return $found[0].Source }
+    return $null
+}
+
+function Install-CopilotCli {
+    $note = "Claude still works. Add Copilot later with: npm i -g @github/copilot"
+    try {
+        $path = Find-CopilotCli
+        if ($path) {
+            Write-Host "  GitHub Copilot CLI already installed - skipping."
+        } else {
+            Write-Step "Installing the GitHub Copilot CLI..."
+            # npm writes warnings to stderr; under 'Stop' that would be promoted to an error (see Invoke-Checked).
+            $ErrorActionPreference = 'Continue'
+            npm install -g '@github/copilot'
+            if ($LASTEXITCODE -ne 0) { throw "npm exited with code $LASTEXITCODE" }
+            # npm's global bin dir may not be on this process's PATH yet.
+            $prefix = (npm prefix -g | Out-String).Trim()
+            if ($prefix) { $env:Path = $env:Path + ';' + $prefix }
+            $path = Find-CopilotCli
+            if (-not $path) { throw "copilot was not found after install" }
+            Write-Host "OK GitHub Copilot CLI installed."
+        }
+        [void](Set-PersistentEnvVar -Name 'NUXT_COPILOT_CLI_PATH' -Value $path)
+        Write-Host "  To use Copilot in the Workbench, run 'copilot' once, then '/login' with the client's Copilot licence."
+    } catch {
+        Write-Host "! Skipping GitHub Copilot CLI - $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "  $note" -ForegroundColor Yellow
+    }
 }
 
 # A company-managed PC (Entra-joined) signs in to Claude through the
@@ -764,8 +802,8 @@ $script:WindowXaml = @'
         </Grid.ColumnDefinitions>
         <Image x:Name="Logo" Grid.Row="0" Grid.Column="0" Width="32" Height="32" Margin="0,0,14,0" VerticalAlignment="Center"/>
         <TextBlock x:Name="Status" Grid.Row="0" Grid.Column="1" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Text="Ready to install"/>
-        <TextBlock x:Name="Count" Grid.Row="0" Grid.Column="2" FontSize="14" Foreground="#5D5D66" VerticalAlignment="Center" Text="0 of 10 steps"/>
-        <ProgressBar x:Name="Bar" Grid.Row="2" Grid.ColumnSpan="3" Height="6" Minimum="0" Maximum="10" Value="0" Foreground="#A3119A" Background="#E9E9EE" BorderThickness="0"/>
+        <TextBlock x:Name="Count" Grid.Row="0" Grid.Column="2" FontSize="14" Foreground="#5D5D66" VerticalAlignment="Center" Text="0 of 11 steps"/>
+        <ProgressBar x:Name="Bar" Grid.Row="2" Grid.ColumnSpan="3" Height="6" Minimum="0" Maximum="11" Value="0" Foreground="#A3119A" Background="#E9E9EE" BorderThickness="0"/>
       </Grid>
     </Border>
     <Border DockPanel.Dock="Bottom" Padding="24,12,16,12" Background="#F7F7FA" BorderBrush="#E6E6EA" BorderThickness="0,1,0,0">
@@ -1262,7 +1300,7 @@ function Stop-InstallWindow {
 # separate process) where the window closes on completion regardless of
 # return/exit unless -NoExit was passed — pausing is the only thing that keeps
 # that one open long enough to read.
-# Ten rows over twelve calls: the three shortcut writes are one step to a
+# Eleven rows over fourteen calls: the three shortcut writes are one step to a
 # person. The Name values are the labels the window shows, in this order;
 # scripts/installer-window.test.mjs pins both the count and the names.
 $steps = @(
@@ -1270,6 +1308,7 @@ $steps = @(
     @{ Name = 'Install the Claude CLI'; Action = { Install-ClaudeCli } }
     @{ Name = 'Sign in to Claude'; Action = { Connect-ClaudeAccount }; Handoff = $true; Hint = 'Sign in in the browser, then paste the code in the box below' }
     @{ Name = 'Sign in to GitHub'; Action = { Connect-GitHubAccount }; Handoff = $true; Hint = 'Copy the code below, then enter it in the browser that opens' }
+    @{ Name = 'Install the GitHub Copilot CLI (optional)'; Action = { Install-CopilotCli } }
     @{ Name = 'Download the FMDK Agentic OS app'; Action = { Install-GitClone -Url $AppRepoUrl -Dest $AppDir -FriendlyName 'FMDK Agentic OS app' } }
     @{ Name = 'Download the Framework CLI'; Action = { Install-GitClone -Url $FrameworkRepoUrl -Dest $CliDir -FriendlyName 'Framework CLI' } }
     @{ Name = 'Set up your workbench home'; Action = { Initialize-WorkbenchHome -FmdkCliPath (Join-Path $CliDir 'framework\bin\fmdk.js') } }
