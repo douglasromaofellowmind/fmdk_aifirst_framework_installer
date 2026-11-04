@@ -417,6 +417,24 @@ $AppRepoUrl = 'https://github.com/douglas-romao_fmdk/fmdk_aifirst_framework_ui.g
 $FrameworkRepoUrl = 'https://github.com/douglas-romao_fmdk/fmdk_aifirst_framework.git'
 $InstallerDistUrl = 'https://raw.githubusercontent.com/douglasromaofellowmind/fmdk_aifirst_framework_installer/main'
 
+# AB#236769 / ADR-123: the release channel. Stable is each repo's default branch, exactly as before; beta is
+# its `beta` branch, for testers the framework team invited. Read from the environment, because the one-liner
+# (`irm ... | iex`) cannot pass parameters: `$env:FMDK_CHANNEL='beta'` first, then the one-liner.
+$Channel = if ($env:FMDK_CHANNEL) { $env:FMDK_CHANNEL.Trim().ToLowerInvariant() } else { 'stable' }
+$ChannelBranch = if ($Channel -eq 'beta') { 'beta' } else { $null }
+
+function Assert-ChannelPublished {
+    # Both repos, before either clone lands: a tester who asked for beta must never end up on stable
+    # without being told, nor with the app on one channel and the framework on the other.
+    if (-not $ChannelBranch) { return }
+    foreach ($repo in @($AppRepoUrl, $FrameworkRepoUrl)) {
+        Invoke-Checked -FriendlyError "No beta has been published yet (no '$ChannelBranch' branch in $repo). Ask the framework team, or install the official release: close this window and run the one-liner without FMDK_CHANNEL." -Action {
+            & git ls-remote --exit-code --heads -- $repo $ChannelBranch 2>&1 | Out-Null
+        }
+    }
+    Write-Host "OK The beta channel is published."
+}
+
 $script:InstallLogPath = $null
 $script:InstallLogStart = 0
 
@@ -454,10 +472,17 @@ function Install-GitClone {
     param(
         [Parameter(Mandatory)][string]$Url,
         [Parameter(Mandatory)][string]$Dest,
-        [Parameter(Mandatory)][string]$FriendlyName
+        [Parameter(Mandatory)][string]$FriendlyName,
+        # AB#236769: the channel's branch; empty = the repo's default branch (stable), as before.
+        [string]$Branch
     )
     if (Test-Path (Join-Path $Dest '.git')) {
         Write-Host "  $FriendlyName already installed at $Dest - skipping."
+        if ($Branch) {
+            # An existing install keeps the channel it has; switching is the Workbench's job, so the
+            # running app applies it through its own update (with rollback) rather than a re-run here.
+            Write-Host "  To move it to the $Channel channel, open the Workbench: Updates > Release channel." -ForegroundColor Yellow
+        }
         return
     }
     Write-Step "Downloading $FriendlyName..."
@@ -479,7 +504,8 @@ function Install-GitClone {
     # Seen live: a user cloned the app repo fine and failed here four seconds later, reading
     # "Check your internet connection and sign-in" when both were working and only access was missing.
     Invoke-Checked -FriendlyError "Could not download $FriendlyName. You may not have access to this repository - ask the framework team to check. If you do have access, check your internet connection and sign-in, then try again." -Action {
-        $cloneOutput = & git clone --quiet -- $Url $tempDest 2>&1
+        $branchArgs = if ($Branch) { @('--branch', $Branch) } else { @() }
+        $cloneOutput = & git clone --quiet @branchArgs -- $Url $tempDest 2>&1
         if ($LASTEXITCODE -ne 0 -and $cloneOutput) {
             $cloneOutput | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
         }
@@ -1309,8 +1335,8 @@ $steps = @(
     @{ Name = 'Sign in to Claude'; Action = { Connect-ClaudeAccount }; Handoff = $true; Hint = 'Sign in in the browser, then paste the code in the box below' }
     @{ Name = 'Sign in to GitHub'; Action = { Connect-GitHubAccount }; Handoff = $true; Hint = 'Copy the code below, then enter it in the browser that opens' }
     @{ Name = 'Install the GitHub Copilot CLI (optional)'; Action = { Install-CopilotCli } }
-    @{ Name = 'Download the FMDK Agentic OS app'; Action = { Install-GitClone -Url $AppRepoUrl -Dest $AppDir -FriendlyName 'FMDK Agentic OS app' } }
-    @{ Name = 'Download the Framework CLI'; Action = { Install-GitClone -Url $FrameworkRepoUrl -Dest $CliDir -FriendlyName 'Framework CLI' } }
+    @{ Name = 'Download the FMDK Agentic OS app'; Action = { Assert-ChannelPublished; Install-GitClone -Url $AppRepoUrl -Dest $AppDir -FriendlyName 'FMDK Agentic OS app' -Branch $ChannelBranch } }
+    @{ Name = 'Download the Framework CLI'; Action = { Install-GitClone -Url $FrameworkRepoUrl -Dest $CliDir -FriendlyName 'Framework CLI' -Branch $ChannelBranch } }
     @{ Name = 'Set up your workbench home'; Action = { Initialize-WorkbenchHome -FmdkCliPath (Join-Path $CliDir 'framework\bin\fmdk.js') } }
     @{ Name = 'Configure the app'; Action = { Set-AppConfig } }
     @{ Name = 'Create shortcuts'; Action = { Install-Shortcuts; New-UpdateShortcut; New-StopShortcut; New-UninstallShortcut } }
@@ -1320,6 +1346,16 @@ $steps = @(
 try {
     Start-InstallLog
     Write-Host "FMDK Agentic OS installer" -ForegroundColor Green
+    # AB#236769: refuse a channel we don't publish before anything is installed, and say which one this is.
+    if ($Channel -notin @('stable', 'beta')) {
+        Write-Host "X FMDK_CHANNEL is '$env:FMDK_CHANNEL', but the channels are 'stable' and 'beta'. Nothing was installed." -ForegroundColor Red
+        Write-Host "  Run `$env:FMDK_CHANNEL='beta' for the beta, or remove it (`Remove-Item Env:FMDK_CHANNEL`) for the official release."
+        Stop-InstallLog
+        return
+    }
+    if ($ChannelBranch) {
+        Write-Host "Installing the BETA channel: early builds with features still being tested. Switch back any time in the Workbench: Updates > Release channel." -ForegroundColor Yellow
+    }
     Write-Host "This installs Node.js, Git, GitHub CLI, the Azure CLI, and the Claude CLI, then sets up your workbench."
     Write-Host "Already-installed pieces are skipped, so it's safe to re-run this script."
     [void](Start-InstallWindow -StepNames @($steps | ForEach-Object { $_.Name }))
