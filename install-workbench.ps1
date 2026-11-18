@@ -417,7 +417,7 @@ $AppRepoUrl = 'https://github.com/douglas-romao_fmdk/fmdk_aifirst_framework_ui.g
 $FrameworkRepoUrl = 'https://github.com/douglas-romao_fmdk/fmdk_aifirst_framework.git'
 $InstallerDistUrl = 'https://raw.githubusercontent.com/douglasromaofellowmind/fmdk_aifirst_framework_installer/main'
 
-# AB#236769 / ADR-123: the release channel. Stable is each repo's default branch, exactly as before; beta is
+# AB#236769 / ADR-124: the release channel. Stable is each repo's default branch, exactly as before; beta is
 # its `beta` branch, for testers the framework team invited. Read from the environment, because the one-liner
 # (`irm ... | iex`) cannot pass parameters: `$env:FMDK_CHANNEL='beta'` first, then the one-liner.
 $Channel = if ($env:FMDK_CHANNEL) { $env:FMDK_CHANNEL.Trim().ToLowerInvariant() } else { 'stable' }
